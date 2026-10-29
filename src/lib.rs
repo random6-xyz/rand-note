@@ -10,6 +10,7 @@ const MAX_NOTE_LINES: usize = 10;
 const MAX_REQUEST_BYTES: usize = 4_096;
 const KST_OFFSET_SECONDS: i32 = 9 * 60 * 60;
 const HISTORY_START_DATE: &str = "2026-10-14";
+const MAX_RANGE_DAYS: i64 = 31;
 const ADMIN_COOKIE_NAME: &str = "admin_session";
 
 #[derive(Debug, Deserialize)]
@@ -23,11 +24,19 @@ struct Note {
     id: String,
     text: String,
     created_at: String,
+    board_date: String,
 }
 
 #[derive(Serialize)]
 struct NotesResponse {
     date: String,
+    notes: Vec<Note>,
+}
+
+#[derive(Serialize)]
+struct RangeNotesResponse {
+    from: String,
+    to: String,
     notes: Vec<Note>,
 }
 
@@ -138,41 +147,74 @@ async fn handle_request(request: Request, env: Env, origin: Option<&str>) -> Res
 
 async fn get_notes(url: Url, env: Env, origin: Option<&str>) -> Result<Response> {
     let today = current_kst_date()?;
-    let requested_date = url
-        .query_pairs()
-        .find(|(key, _)| key == "date")
-        .map(|(_, value)| value.into_owned());
+    let query_value = |name: &str| {
+        url.query_pairs()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.into_owned())
+    };
+    let requested_date = query_value("date");
+    let requested_from = query_value("from");
+    let requested_to = query_value("to");
+
+    if requested_from.is_some() || requested_to.is_some() {
+        if requested_date.is_some() {
+            return api_response(
+                &ApiError {
+                    error: "invalid_range",
+                },
+                400,
+                origin,
+            );
+        }
+        let (from, to) = match validate_range(requested_from, requested_to, &today) {
+            Ok(range) => range,
+            Err(error) => return api_response(&ApiError { error }, 400, origin),
+        };
+        let notes = query_notes(
+            &env,
+            "SELECT id, text, created_at, board_date FROM notes \
+             WHERE board_date BETWEEN ?1 AND ?2 ORDER BY created_at ASC, id ASC",
+            &[JsValue::from_str(&from), JsValue::from_str(&to)],
+        )
+        .await?;
+        return api_response(&RangeNotesResponse { from, to, notes }, 200, origin);
+    }
+
     let date = match validate_date(requested_date, &today) {
         Ok(date) => date,
         Err(error) => return api_response(&ApiError { error }, 400, origin),
     };
+    let notes = query_notes(
+        &env,
+        "SELECT id, text, created_at, board_date FROM notes \
+         WHERE board_date = ?1 ORDER BY created_at ASC, id ASC",
+        &[JsValue::from_str(&date)],
+    )
+    .await?;
 
-    let database = env.d1("DB")?;
-    let date_value = JsValue::from_str(&date);
-    let rows: Vec<Vec<String>> = database
-        .prepare(
-            "SELECT id, text, created_at FROM notes \
-             WHERE board_date = ?1 ORDER BY created_at ASC, id ASC",
-        )
-        .bind(&[date_value])?
+    api_response(&NotesResponse { date, notes }, 200, origin)
+}
+
+async fn query_notes(env: &Env, query: &str, values: &[JsValue]) -> Result<Vec<Note>> {
+    let rows: Vec<Vec<String>> = env
+        .d1("DB")?
+        .prepare(query)
+        .bind(values)?
         .raw::<String>()
         .await?;
 
-    let notes = rows
+    Ok(rows
         .into_iter()
         .filter_map(|row| {
-            if row.len() != 3 {
-                return None;
-            }
+            let [id, text, created_at, board_date]: [String; 4] = row.try_into().ok()?;
             Some(Note {
-                id: row[0].clone(),
-                text: row[1].clone(),
-                created_at: row[2].clone(),
+                id,
+                text,
+                created_at,
+                board_date,
             })
         })
-        .collect();
-
-    api_response(&NotesResponse { date, notes }, 200, origin)
+        .collect())
 }
 
 async fn create_note(mut request: Request, env: Env, origin: Option<&str>) -> Result<Response> {
@@ -270,6 +312,7 @@ async fn create_note(mut request: Request, env: Env, origin: Option<&str>) -> Re
                 id,
                 text,
                 created_at,
+                board_date,
             },
         },
         201,
@@ -442,6 +485,29 @@ fn validate_date(
     Ok(date)
 }
 
+fn validate_range(
+    requested_from: Option<String>,
+    requested_to: Option<String>,
+    today: &str,
+) -> std::result::Result<(String, String), &'static str> {
+    let (Some(from), Some(to)) = (requested_from, requested_to) else {
+        return Err("invalid_range");
+    };
+    let from = validate_date(Some(from), today)?;
+    let to = validate_date(Some(to), today)?;
+
+    let parsed_from = NaiveDate::parse_from_str(&from, "%Y-%m-%d").map_err(|_| "invalid_date")?;
+    let parsed_to = NaiveDate::parse_from_str(&to, "%Y-%m-%d").map_err(|_| "invalid_date")?;
+    if parsed_from > parsed_to {
+        return Err("invalid_range");
+    }
+    if (parsed_to - parsed_from).num_days() + 1 > MAX_RANGE_DAYS {
+        return Err("range_too_long");
+    }
+
+    Ok((from, to))
+}
+
 fn note_line_count(text: &str) -> usize {
     text.replace("\r\n", "\n")
         .replace('\r', "\n")
@@ -516,6 +582,38 @@ mod tests {
             validate_date(None, "2026-10-13"),
             Ok("2026-10-13".to_owned())
         );
+    }
+
+    #[test]
+    fn range_validation_requires_ordered_dates_within_history() {
+        let today = "2026-11-20";
+        let range = |a: &str, b: &str| validate_range(Some(a.into()), Some(b.into()), today);
+
+        assert_eq!(
+            range("2026-10-14", "2026-10-20"),
+            Ok(("2026-10-14".to_owned(), "2026-10-20".to_owned()))
+        );
+        assert_eq!(
+            range("2026-10-20", "2026-10-20"),
+            Ok(("2026-10-20".to_owned(), "2026-10-20".to_owned()))
+        );
+        assert_eq!(range("2026-10-20", "2026-10-14"), Err("invalid_range"));
+        assert_eq!(range("2026-10-13", "2026-10-20"), Err("history_not_available"));
+        assert_eq!(range("2026-11-01", "2026-11-21"), Err("future_date"));
+        assert_eq!(range("2026-10-15", "2026-02-30"), Err("invalid_date"));
+        assert_eq!(
+            validate_range(Some("2026-10-14".to_owned()), None, today),
+            Err("invalid_range")
+        );
+    }
+
+    #[test]
+    fn range_validation_limits_span_to_max_days() {
+        let today = "2026-12-31";
+        let range = |a: &str, b: &str| validate_range(Some(a.into()), Some(b.into()), today);
+
+        assert!(range("2026-11-01", "2026-12-01").is_ok());
+        assert_eq!(range("2026-11-01", "2026-12-02"), Err("range_too_long"));
     }
 
     #[test]

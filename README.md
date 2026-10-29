@@ -1,6 +1,6 @@
 # Public Note Board
 
-A shared sticky-note board that opens a new board each day using Korea Standard Time (KST). Anyone can post notes to today's board and browse read-only archives dated 2026-10-14 through today. The default board remains today's board; dates before the archive start and future dates cannot be selected for browsing. Notes are limited to 10 lines and 250 characters.
+A shared sticky-note board that opens a new board each day using Korea Standard Time (KST). Anyone can post notes to today's board and browse read-only archives dated 2026-10-14 through today, either one day at a time or as a date range of up to 31 days that shows every note posted in that period. The default board remains today's board; dates before the archive start and future dates cannot be selected for browsing. Notes are limited to 10 lines and 250 characters.
 
 ## Structure
 
@@ -38,7 +38,7 @@ There is no login form or login endpoint. Generate a high-entropy token with `op
 - In browser developer tools, manually add a cookie for the **Worker API origin**: name `admin_session`, value exactly the token. Reload the Pages site to activate admin controls.
 - For the production same-origin setup at `https://note.random6.xyz`, use `HttpOnly`, `Secure`, `SameSite=Lax`, and `Path=/`. For a cross-site Pages/Worker setup, use `SameSite=None` instead. For local `http://localhost`, use `HttpOnly`, `SameSite=Lax`, and `Path=/` without `Secure`.
 
-With a valid cookie, each note has an `×` delete button and a `Reset` button deletes all notes from today (KST). Rotating `ADMIN_TOKEN` revokes existing cookies. The API exposes `GET /api/admin/session`, `DELETE /api/admin/notes/{id}`, and `DELETE /api/admin/notes/today`.
+With a valid cookie, each note has an `×` delete button and a `Reset` button deletes all notes from today (KST). Rotating `ADMIN_TOKEN` revokes existing cookies. Public reads use `GET /api/notes` (today), `GET /api/notes?date=YYYY-MM-DD` (one day), or `GET /api/notes?from=YYYY-MM-DD&to=YYYY-MM-DD` (inclusive range, up to 31 days). The API exposes `GET /api/admin/session`, `DELETE /api/admin/notes/{id}`, and `DELETE /api/admin/notes/today`.
 
 Verification commands:
 

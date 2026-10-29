@@ -3,9 +3,11 @@
   const HISTORY_START_DATE = "2026-10-14";
   const MAX_NOTE_LINES = 10;
   const MAX_NOTE_CHARS = 250;
-  const state = { today: null, selectedDate: null, notes: [], isAdmin: false };
+  const MAX_RANGE_DAYS = 31;
+  const state = { today: null, selectedRange: null, notes: [], isAdmin: false };
 
-  const dateInput = document.querySelector("#history-date");
+  const fromInput = document.querySelector("#history-from");
+  const toInput = document.querySelector("#history-to");
   const viewDateButton = document.querySelector("#view-date");
   const viewTodayButton = document.querySelector("#view-today");
   const adminBadge = document.querySelector("#admin-badge");
@@ -28,6 +30,8 @@
       invalid_date: "Choose a valid date.",
       history_not_available: "History starts on 2026-10-14.",
       future_date: "Future dates are unavailable.",
+      invalid_range: "Choose a start date on or before the end date.",
+      range_too_long: `Choose a range of up to ${MAX_RANGE_DAYS} days.`,
       admin_required: "Admin cookie required.",
       origin_required: "Admin actions must come from this site.",
       rate_limited: "Too many posts. Try again in a moment.",
@@ -68,6 +72,16 @@
     }).format(date);
   }
 
+  function rangeLength(from, to) {
+    return Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000) + 1;
+  }
+
+  function isTodayView() {
+    return state.selectedRange !== null
+      && state.selectedRange.from === state.today
+      && state.selectedRange.to === state.today;
+  }
+
   function renderNotes(notes) {
     notesContainer.replaceChildren();
     if (notes.length === 0) {
@@ -92,7 +106,10 @@
 
       const time = document.createElement("time");
       time.dateTime = note.created_at;
-      time.textContent = formatTime(note.created_at);
+      const showDate = state.selectedRange && state.selectedRange.from !== state.selectedRange.to;
+      time.textContent = showDate
+        ? `${note.board_date} ${formatTime(note.created_at)}`
+        : formatTime(note.created_at);
 
       card.append(contentViewport, time);
       if (state.isAdmin) {
@@ -108,16 +125,26 @@
     }
   }
 
-  function setSelectedDate(date, notes) {
-    state.selectedDate = date;
+  function setSelectedRange(from, to, notes) {
+    state.selectedRange = { from, to };
     state.notes = notes;
-    dateInput.value = date;
-    boardHeading.textContent = date;
-    noteForm.hidden = date !== state.today;
-    boardStatus.textContent = date === state.today
-      ? (state.today >= HISTORY_START_DATE ? "Today" : errorMessage("history_not_available"))
-      : "Archive · Read only";
+    fromInput.value = from;
+    toInput.value = to;
+    toInput.min = from;
+    boardHeading.textContent = from === to ? from : `${from} – ${to}`;
+    noteForm.hidden = !isTodayView();
+    if (isTodayView()) {
+      boardStatus.textContent = state.today >= HISTORY_START_DATE ? "Today" : errorMessage("history_not_available");
+    } else {
+      const count = notes.length === 1 ? "1 note" : `${notes.length} notes`;
+      boardStatus.textContent = `Archive · Read only · ${count}`;
+    }
     renderNotes(notes);
+  }
+
+  function reloadSelectedRange() {
+    if (isTodayView()) return loadToday();
+    return loadRange(state.selectedRange.from, state.selectedRange.to);
   }
 
   async function refreshAdminSession() {
@@ -129,15 +156,14 @@
     }
     adminBadge.hidden = !state.isAdmin;
     resetTodayButton.hidden = !state.isAdmin;
-    if (state.selectedDate) renderNotes(state.notes);
+    if (state.selectedRange) renderNotes(state.notes);
   }
 
   async function deleteNote(id, button) {
     button.disabled = true;
     try {
       await api(`/api/admin/notes/${encodeURIComponent(id)}`, { method: "DELETE" });
-      if (state.selectedDate === state.today) await loadToday();
-      else await loadDate(state.selectedDate);
+      await reloadSelectedRange();
     } catch (error) {
       boardStatus.textContent = errorMessage(error.message);
       if (error.message === "admin_required") await refreshAdminSession();
@@ -166,11 +192,14 @@
     try {
       const data = await api("/api/notes");
       state.today = data.date;
-      dateInput.min = HISTORY_START_DATE;
-      dateInput.max = data.date;
-      dateInput.disabled = data.date < HISTORY_START_DATE;
-      viewDateButton.disabled = data.date < HISTORY_START_DATE;
-      setSelectedDate(data.date, data.notes);
+      const historyUnavailable = data.date < HISTORY_START_DATE;
+      fromInput.min = HISTORY_START_DATE;
+      fromInput.max = data.date;
+      toInput.max = data.date;
+      fromInput.disabled = historyUnavailable;
+      toInput.disabled = historyUnavailable;
+      viewDateButton.disabled = historyUnavailable;
+      setSelectedRange(data.date, data.date, data.notes);
       formStatus.textContent = "";
     } catch (error) {
       boardStatus.textContent = "Offline";
@@ -181,26 +210,33 @@
     }
   }
 
-  async function loadDate(date) {
-    if (!date) {
-      boardStatus.textContent = "Choose a date";
+  async function loadRange(from, to) {
+    if (!from || !to) {
+      boardStatus.textContent = "Choose a date range";
       return;
     }
-    if (state.today && date < HISTORY_START_DATE) {
-      dateInput.value = state.today >= HISTORY_START_DATE ? state.today : "";
+    if (from < HISTORY_START_DATE || to < HISTORY_START_DATE) {
       boardStatus.textContent = errorMessage("history_not_available");
       return;
     }
-    if (state.today && date > state.today) {
-      dateInput.value = state.today;
+    if (state.today && (from > state.today || to > state.today)) {
       boardStatus.textContent = errorMessage("future_date");
+      return;
+    }
+    if (from > to) {
+      boardStatus.textContent = errorMessage("invalid_range");
+      return;
+    }
+    if (rangeLength(from, to) > MAX_RANGE_DAYS) {
+      boardStatus.textContent = errorMessage("range_too_long");
       return;
     }
     boardStatus.textContent = "Loading…";
     notesContainer.setAttribute("aria-busy", "true");
     try {
-      const data = await api(`/api/notes?date=${encodeURIComponent(date)}`);
-      setSelectedDate(data.date, data.notes);
+      const params = new URLSearchParams({ from, to });
+      const data = await api(`/api/notes?${params}`);
+      setSelectedRange(data.from, data.to, data.notes);
     } catch (error) {
       boardStatus.textContent = "Unavailable";
       notesContainer.replaceChildren();
@@ -249,15 +285,23 @@
     updateCharacterCount();
   }
 
-  viewDateButton.addEventListener("click", () => loadDate(dateInput.value));
+  viewDateButton.addEventListener("click", () => loadRange(fromInput.value, toInput.value));
   viewTodayButton.addEventListener("click", loadToday);
   resetTodayButton.addEventListener("click", resetToday);
-  dateInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      loadDate(dateInput.value);
+  fromInput.addEventListener("change", () => {
+    toInput.min = fromInput.value || HISTORY_START_DATE;
+    if (fromInput.value && (!toInput.value || toInput.value < fromInput.value)) {
+      toInput.value = fromInput.value;
     }
   });
+  for (const input of [fromInput, toInput]) {
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        loadRange(fromInput.value, toInput.value);
+      }
+    });
+  }
 
   noteText.addEventListener("input", enforceLineLimit);
   noteText.addEventListener("keydown", (event) => {
@@ -305,7 +349,7 @@
   });
 
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && state.selectedDate === state.today) loadToday();
+    if (!document.hidden && isTodayView()) loadToday();
   });
 
   updateCharacterCount();

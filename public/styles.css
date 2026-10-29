@@ -66,8 +66,14 @@ textarea {
 
 .history-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+}
+
+.range-separator {
+  color: #999;
+  font-size: 0.84rem;
 }
 
 .history-controls input {

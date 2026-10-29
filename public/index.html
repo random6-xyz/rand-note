@@ -21,8 +21,11 @@
           </div>
           <div class="board-controls">
             <div class="history-controls">
-              <label class="visually-hidden" for="history-date">Browse history</label>
-              <input id="history-date" type="date" min="2026-10-14" aria-label="Browse history">
+              <label class="visually-hidden" for="history-from">Browse from</label>
+              <input id="history-from" type="date" min="2026-10-14" aria-label="Browse from">
+              <span class="range-separator" aria-hidden="true">–</span>
+              <label class="visually-hidden" for="history-to">Browse to</label>
+              <input id="history-to" type="date" min="2026-10-14" aria-label="Browse to">
               <button id="view-date" class="button button-light" type="button">Open</button>
             </div>
             <button id="view-today" class="button button-dark" type="button">Today</button>
