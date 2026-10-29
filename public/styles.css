@@ -164,11 +164,13 @@ textarea:focus-visible {
   font-size: 0.78rem;
 }
 
+/* Masonry: cards span 4px rows (see GRID_ROW_PX in app.js); the vertical gap is added in the span. */
 .notes-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 210px), 1fr));
+  grid-auto-rows: 4px;
   align-items: start;
-  gap: 18px;
+  gap: 0 18px;
   padding: 14px 28px 190px;
 }
 
@@ -176,7 +178,6 @@ textarea:focus-visible {
   position: relative;
   display: flex;
   min-height: 150px;
-  max-height: 280px;
   flex-direction: column;
   padding: 17px 17px 14px;
   overflow: hidden;
@@ -227,7 +228,10 @@ textarea:focus-visible {
 .note-card p {
   margin: 0;
   white-space: pre-wrap;
-  line-height: 1.55;
+  word-break: keep-all;
+  tab-size: 4;
+  font-size: 0.98rem;
+  line-height: 1.5;
 }
 
 .note-card time {
@@ -298,6 +302,7 @@ textarea:focus-visible {
   color: #191919;
   font-size: 0.98rem;
   line-height: 1.5;
+  tab-size: 4;
 }
 
 .composer textarea::placeholder {
@@ -417,13 +422,12 @@ textarea:focus-visible {
 
   .notes-grid {
     grid-template-columns: repeat(auto-fill, minmax(min(100%, 170px), 1fr));
-    gap: 12px;
+    gap: 0 12px;
     padding: 10px 16px 180px;
   }
 
   .note-card {
     min-height: 130px;
-    max-height: 240px;
     padding: 14px;
   }
 

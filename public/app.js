@@ -3,6 +3,7 @@
   const HISTORY_START_DATE = "2026-10-14";
   const MAX_NOTE_LINES = 10;
   const MAX_NOTE_CHARS = 250;
+  const GRID_ROW_PX = 4;
   const state = { today: null, selectedDate: null, notes: [], isAdmin: false };
 
   const dateInput = document.querySelector("#history-date");
@@ -18,6 +19,15 @@
   const characterCount = document.querySelector("#character-count");
   const formStatus = document.querySelector("#form-status");
   const notesContainer = document.querySelector("#notes");
+
+  // Each card spans enough grid rows for its height plus the column gap, so short
+  // cards are not stretched to the tallest card in a row and no blank holes remain.
+  const cardResizeObserver = new ResizeObserver((entries) => {
+    const gap = parseFloat(getComputedStyle(notesContainer).columnGap) || 0;
+    for (const { target } of entries) {
+      target.style.gridRowEnd = `span ${Math.ceil((target.offsetHeight + gap) / GRID_ROW_PX)}`;
+    }
+  });
 
   function errorMessage(code) {
     const messages = {
@@ -69,6 +79,7 @@
   }
 
   function renderNotes(notes) {
+    cardResizeObserver.disconnect();
     notesContainer.replaceChildren();
     if (notes.length === 0) {
       const empty = document.createElement("p");
@@ -105,6 +116,7 @@
         card.append(deleteButton);
       }
       notesContainer.append(card);
+      cardResizeObserver.observe(card);
     }
   }
 
@@ -217,6 +229,11 @@
     notesContainer.append(message);
   }
 
+  // Mirrors the Worker: drop leading blank lines and trailing whitespace, keep indentation.
+  function trimNoteText(value) {
+    return value.trimEnd().replace(/^(?:[^\S\r\n]*(?:\r\n|\r|\n))+/, "");
+  }
+
   function countLines(text) {
     return text.length === 0 ? 0 : text.replace(/\r\n?/g, "\n").split("\n").length;
   }
@@ -269,7 +286,7 @@
 
   noteForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const text = noteText.value.trim();
+    const text = trimNoteText(noteText.value);
     if (!text) {
       formStatus.textContent = errorMessage("empty_text");
       noteText.focus();
