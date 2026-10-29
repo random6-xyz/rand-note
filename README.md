@@ -1,13 +1,13 @@
 # Public Note Board
 
-A shared sticky-note board that opens a new board each day using Korea Standard Time (KST). Anyone can post notes to today's board and browse read-only archives dated 2026-10-14 through today, either one day at a time or as a date range of up to 31 days that shows every note posted in that period. The default board remains today's board; dates before the archive start and future dates cannot be selected for browsing. Notes are limited to 10 lines and 250 characters.
+A shared sticky-note board that opens a new board each day using Korea Standard Time (KST). Anyone can post notes to today's board and browse read-only archives dated 2026-10-14 through today, either one day at a time or as a date range of up to 31 days that shows every note posted in that period. The default board remains today's board; dates before the archive start and future dates cannot be selected for browsing. Notes are limited to 10 lines and 250 characters, and each note can include one PNG, JPEG, GIF, or WebP image of up to 5 MB (a note may be an image alone). Images are stored in Cloudflare R2.
 
 ## Structure
 
 - `src/lib.rs`: Rust Cloudflare Worker API
 - `public/`: static Cloudflare Pages frontend
 - `migrations/`: Cloudflare D1 schema migrations
-- `wrangler.toml`: Worker, D1, and posting-rate-limit configuration
+- `wrangler.toml`: Worker, D1, R2, and posting-rate-limit configuration
 
 ## Local development
 
@@ -38,7 +38,7 @@ There is no login form or login endpoint. Generate a high-entropy token with `op
 - In browser developer tools, manually add a cookie for the **Worker API origin**: name `admin_session`, value exactly the token. Reload the Pages site to activate admin controls.
 - For the production same-origin setup at `https://note.random6.xyz`, use `HttpOnly`, `Secure`, `SameSite=Lax`, and `Path=/`. For a cross-site Pages/Worker setup, use `SameSite=None` instead. For local `http://localhost`, use `HttpOnly`, `SameSite=Lax`, and `Path=/` without `Secure`.
 
-With a valid cookie, each note has an `×` delete button and a `Reset` button deletes all notes from today (KST). Rotating `ADMIN_TOKEN` revokes existing cookies. Public reads use `GET /api/notes` (today), `GET /api/notes?date=YYYY-MM-DD` (one day), or `GET /api/notes?from=YYYY-MM-DD&to=YYYY-MM-DD` (inclusive range, up to 31 days). The API exposes `GET /api/admin/session`, `DELETE /api/admin/notes/{id}`, and `DELETE /api/admin/notes/today`.
+With a valid cookie, each note has an `×` delete button and a `Reset` button deletes all notes from today (KST); deleting a note also deletes its image from R2. Rotating `ADMIN_TOKEN` revokes existing cookies. Public reads use `GET /api/notes` (today), `GET /api/notes?date=YYYY-MM-DD` (one day), or `GET /api/notes?from=YYYY-MM-DD&to=YYYY-MM-DD` (inclusive range, up to 31 days). Notes with an image have a non-null `image_type`, and the image is served from `GET /api/images/{id}`. To post an image, send `multipart/form-data` with `text` and `image` fields to `POST /api/notes`. The API exposes `GET /api/admin/session`, `DELETE /api/admin/notes/{id}`, and `DELETE /api/admin/notes/today`.
 
 Verification commands:
 
@@ -53,10 +53,11 @@ npm run build:worker
 The production setup serves both the Pages site and the Worker API under `https://note.random6.xyz`. The Worker route handles `note.random6.xyz/api/*`; other paths are served by Pages. This requires an active Cloudflare zone for `random6.xyz` and a proxied DNS record for `note.random6.xyz`.
 
 1. Create the Pages project `rand-note` and attach `note.random6.xyz` as its custom domain in Cloudflare Pages.
-2. Create the D1 database with `npx wrangler d1 create rand-note`, then replace `database_id` in `wrangler.toml` with the returned ID. Make sure the Rate Limiting `namespace_id` is unique in your account.
-3. Confirm `ALLOWED_ORIGIN` is `https://note.random6.xyz` and that the Worker route in `wrangler.toml` is `note.random6.xyz/api/*` in the `random6.xyz` zone.
-4. To enable administrator controls, set the Worker secret `ADMIN_TOKEN` with `npx wrangler secret put ADMIN_TOKEN`. Never commit its value.
-5. Apply the remote D1 migration and deploy both services:
+2. Create the R2 bucket for note images with `npx wrangler r2 bucket create rand-note-images`.
+3. Create the D1 database with `npx wrangler d1 create rand-note`, then replace `database_id` in `wrangler.toml` with the returned ID. Make sure the Rate Limiting `namespace_id` is unique in your account.
+4. Confirm `ALLOWED_ORIGIN` is `https://note.random6.xyz` and that the Worker route in `wrangler.toml` is `note.random6.xyz/api/*` in the `random6.xyz` zone.
+5. To enable administrator controls, set the Worker secret `ADMIN_TOKEN` with `npx wrangler secret put ADMIN_TOKEN`. Never commit its value.
+6. Apply the remote D1 migration and deploy both services:
 
    ```sh
    npx wrangler d1 migrations apply rand-note --remote

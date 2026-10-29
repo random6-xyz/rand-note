@@ -19,6 +19,10 @@ database_name = "rand-note"
 database_id = "48bdd7b6-25da-4a4c-83ce-4190c0b29adc"
 migrations_dir = "migrations"
 
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "rand-note-images"
+
 [[ratelimits]]
 name = "NOTE_LIMITER"
 namespace_id = "1001"

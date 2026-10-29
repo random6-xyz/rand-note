@@ -8,6 +8,9 @@ use worker::*;
 const MAX_NOTE_CHARS: usize = 250;
 const MAX_NOTE_LINES: usize = 10;
 const MAX_REQUEST_BYTES: usize = 4_096;
+const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+const MAX_UPLOAD_REQUEST_BYTES: usize = MAX_IMAGE_BYTES + 16 * 1024;
+const IMAGE_CACHE_CONTROL: &str = "public, max-age=3600";
 const KST_OFFSET_SECONDS: i32 = 9 * 60 * 60;
 const HISTORY_START_DATE: &str = "2026-10-14";
 const MAX_RANGE_DAYS: i64 = 31;
@@ -25,6 +28,17 @@ struct Note {
     text: String,
     created_at: String,
     board_date: String,
+    image_type: Option<String>,
+}
+
+struct NewNote {
+    text: String,
+    image: Option<NoteImage>,
+}
+
+struct NoteImage {
+    content_type: &'static str,
+    bytes: Vec<u8>,
 }
 
 #[derive(Serialize)]
@@ -113,6 +127,11 @@ async fn handle_request(request: Request, env: Env, origin: Option<&str>) -> Res
     let path = url.path().to_owned();
     let method = request.method();
 
+    if method == Method::Get {
+        if let Some(note_id) = path.strip_prefix("/api/images/") {
+            return get_image(&env, note_id, origin).await;
+        }
+    }
     if method == Method::Get && path == "/api/admin/session" {
         return admin_session(&request, &env, origin);
     }
@@ -172,7 +191,7 @@ async fn get_notes(url: Url, env: Env, origin: Option<&str>) -> Result<Response>
         };
         let notes = query_notes(
             &env,
-            "SELECT id, text, created_at, board_date FROM notes \
+            "SELECT id, text, created_at, board_date, COALESCE(image_type, '') FROM notes \
              WHERE board_date BETWEEN ?1 AND ?2 ORDER BY created_at ASC, id ASC",
             &[JsValue::from_str(&from), JsValue::from_str(&to)],
         )
@@ -186,7 +205,7 @@ async fn get_notes(url: Url, env: Env, origin: Option<&str>) -> Result<Response>
     };
     let notes = query_notes(
         &env,
-        "SELECT id, text, created_at, board_date FROM notes \
+        "SELECT id, text, created_at, board_date, COALESCE(image_type, '') FROM notes \
          WHERE board_date = ?1 ORDER BY created_at ASC, id ASC",
         &[JsValue::from_str(&date)],
     )
@@ -206,19 +225,42 @@ async fn query_notes(env: &Env, query: &str, values: &[JsValue]) -> Result<Vec<N
     Ok(rows
         .into_iter()
         .filter_map(|row| {
-            let [id, text, created_at, board_date]: [String; 4] = row.try_into().ok()?;
+            let [id, text, created_at, board_date, image_type]: [String; 5] = row.try_into().ok()?;
             Some(Note {
                 id,
                 text,
                 created_at,
                 board_date,
+                image_type: (!image_type.is_empty()).then_some(image_type),
             })
         })
         .collect())
 }
 
 async fn create_note(mut request: Request, env: Env, origin: Option<&str>) -> Result<Response> {
-    if let Some(content_length) = request.headers().get("Content-Length")? {
+    let is_multipart = request
+        .headers()
+        .get("Content-Type")?
+        .is_some_and(|content_type| {
+            content_type
+                .to_ascii_lowercase()
+                .starts_with("multipart/form-data")
+        });
+    let content_length = request.headers().get("Content-Length")?;
+    if is_multipart {
+        let within_limit = content_length
+            .and_then(|length| length.parse::<usize>().ok())
+            .is_some_and(|length| length <= MAX_UPLOAD_REQUEST_BYTES);
+        if !within_limit {
+            return api_response(
+                &ApiError {
+                    error: "image_too_large",
+                },
+                413,
+                origin,
+            );
+        }
+    } else if let Some(content_length) = content_length {
         if content_length.parse::<usize>().unwrap_or(usize::MAX) > MAX_REQUEST_BYTES {
             return api_response(
                 &ApiError {
@@ -248,19 +290,22 @@ async fn create_note(mut request: Request, env: Env, origin: Option<&str>) -> Re
         );
     }
 
-    let body = match request.json::<CreateNoteRequest>().await {
-        Ok(body) => body,
-        Err(_) => {
-            return api_response(
-                &ApiError {
-                    error: "invalid_json",
-                },
-                400,
-                origin,
-            );
+    let new_note = if is_multipart {
+        read_form_note(&mut request).await
+    } else {
+        match request.json::<CreateNoteRequest>().await {
+            Ok(body) => Ok(NewNote {
+                text: body.text,
+                image: None,
+            }),
+            Err(_) => Err("invalid_json"),
         }
     };
-    let text = match validate_note_text(&body.text) {
+    let new_note = match new_note {
+        Ok(new_note) => new_note,
+        Err(error) => return api_response(&ApiError { error }, 400, origin),
+    };
+    let text = match validate_note_text(&new_note.text, new_note.image.is_some()) {
         Ok(text) => text,
         Err(error) => return api_response(&ApiError { error }, 400, origin),
     };
@@ -292,19 +337,46 @@ async fn create_note(mut request: Request, env: Env, origin: Option<&str>) -> Re
     };
 
     let id = Uuid::new_v4().to_string();
+    let image_type = new_note.image.as_ref().map(|image| image.content_type);
+    if let Some(image) = new_note.image {
+        env.bucket("IMAGES")?
+            .put(image_key(&id), image.bytes)
+            .http_metadata(HttpMetadata {
+                content_type: Some(image.content_type.to_owned()),
+                ..Default::default()
+            })
+            .execute()
+            .await?;
+    }
+
     let database = env.d1("DB")?;
     let id_value = JsValue::from_str(&id);
     let text_value = JsValue::from_str(&text);
     let created_at_value = JsValue::from_str(&created_at);
     let board_date_value = JsValue::from_str(&board_date);
-    database
+    let image_type_value = image_type.map_or(JsValue::NULL, JsValue::from_str);
+    let inserted = database
         .prepare(
-            "INSERT INTO notes (id, text, created_at, board_date) \
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO notes (id, text, created_at, board_date, image_type) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
         )
-        .bind(&[id_value, text_value, created_at_value, board_date_value])?
+        .bind(&[
+            id_value,
+            text_value,
+            created_at_value,
+            board_date_value,
+            image_type_value,
+        ])?
         .run()
-        .await?;
+        .await;
+    if let Err(error) = inserted {
+        if image_type.is_some() {
+            if let Err(cleanup_error) = env.bucket("IMAGES")?.delete(image_key(&id)).await {
+                console_error!("Image cleanup failed: {:?}", cleanup_error);
+            }
+        }
+        return Err(error);
+    }
 
     api_response(
         &NoteResponse {
@@ -313,10 +385,90 @@ async fn create_note(mut request: Request, env: Env, origin: Option<&str>) -> Re
                 text,
                 created_at,
                 board_date,
+                image_type: image_type.map(str::to_owned),
             },
         },
         201,
         origin,
+    )
+}
+
+async fn read_form_note(request: &mut Request) -> std::result::Result<NewNote, &'static str> {
+    let form = request.form_data().await.map_err(|_| "invalid_form")?;
+    let text = match form.get("text") {
+        Some(FormEntry::Field(text)) => text,
+        None => String::new(),
+        Some(FormEntry::File(_)) => return Err("invalid_form"),
+    };
+    let image = match form.get("image") {
+        Some(FormEntry::File(file)) => {
+            if file.size() == 0 || file.size() > MAX_IMAGE_BYTES {
+                return Err("image_too_large");
+            }
+            let bytes = file.bytes().await.map_err(|_| "invalid_form")?;
+            let content_type = detect_image_type(&bytes).ok_or("unsupported_image")?;
+            Some(NoteImage {
+                content_type,
+                bytes,
+            })
+        }
+        None => None,
+        Some(FormEntry::Field(_)) => return Err("invalid_form"),
+    };
+
+    Ok(NewNote { text, image })
+}
+
+async fn get_image(env: &Env, note_id: &str, origin: Option<&str>) -> Result<Response> {
+    if Uuid::parse_str(note_id).is_err() {
+        return api_response(&ApiError { error: "not_found" }, 404, origin);
+    }
+    let bucket = env.bucket("IMAGES")?;
+    let Some(object) = bucket.get(image_key(note_id)).execute().await? else {
+        return api_response(&ApiError { error: "not_found" }, 404, origin);
+    };
+    let Some(body) = object.body() else {
+        return api_response(&ApiError { error: "not_found" }, 404, origin);
+    };
+    let content_type = object
+        .http_metadata()
+        .content_type
+        .filter(|content_type| is_allowed_image_type(content_type))
+        .unwrap_or_else(|| "application/octet-stream".to_owned());
+
+    let headers = Headers::new();
+    headers.set("content-type", &content_type)?;
+    headers.set("cache-control", IMAGE_CACHE_CONTROL)?;
+    headers.set("etag", &object.http_etag())?;
+    headers.set("x-content-type-options", "nosniff")?;
+    headers.set("content-security-policy", "default-src 'none'; sandbox")?;
+    headers.set("cross-origin-resource-policy", "same-site")?;
+    Ok(Response::from_body(body.response_body()?)?
+        .with_headers(headers))
+}
+
+fn image_key(note_id: &str) -> String {
+    format!("images/{note_id}")
+}
+
+fn detect_image_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
+fn is_allowed_image_type(content_type: &str) -> bool {
+    matches!(
+        content_type,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
     )
 }
 
@@ -352,12 +504,14 @@ async fn delete_note(
         );
     }
 
-    let note_id = JsValue::from_str(note_id);
     env.d1("DB")?
         .prepare("DELETE FROM notes WHERE id = ?1")
-        .bind(&[note_id])?
+        .bind(&[JsValue::from_str(note_id)])?
         .run()
         .await?;
+    if Uuid::parse_str(note_id).is_ok() {
+        env.bucket("IMAGES")?.delete(image_key(note_id)).await?;
+    }
 
     api_response(&AdminActionResponse { ok: true }, 200, origin)
 }
@@ -383,12 +537,27 @@ async fn reset_today(request: &Request, env: Env, origin: Option<&str>) -> Resul
     }
 
     let today = current_kst_date()?;
-    let today_value = JsValue::from_str(&today);
-    env.d1("DB")?
+    let database = env.d1("DB")?;
+    let image_note_ids: Vec<Vec<String>> = database
+        .prepare("SELECT id FROM notes WHERE board_date = ?1 AND image_type IS NOT NULL")
+        .bind(&[JsValue::from_str(&today)])?
+        .raw::<String>()
+        .await?;
+    database
         .prepare("DELETE FROM notes WHERE board_date = ?1")
-        .bind(&[today_value])?
+        .bind(&[JsValue::from_str(&today)])?
         .run()
         .await?;
+
+    let image_keys: Vec<String> = image_note_ids
+        .iter()
+        .filter_map(|row| row.first())
+        .map(|note_id| image_key(note_id))
+        .collect();
+    let bucket = env.bucket("IMAGES")?;
+    for keys in image_keys.chunks(1_000) {
+        bucket.delete_multiple(keys.to_vec()).await?;
+    }
 
     api_response(&AdminActionResponse { ok: true }, 200, origin)
 }
@@ -515,9 +684,9 @@ fn note_line_count(text: &str) -> usize {
         .count()
 }
 
-fn validate_note_text(input: &str) -> std::result::Result<String, &'static str> {
+fn validate_note_text(input: &str, has_image: bool) -> std::result::Result<String, &'static str> {
     let text = input.trim();
-    if text.is_empty() {
+    if text.is_empty() && !has_image {
         return Err("empty_text");
     }
     if note_line_count(text) > MAX_NOTE_LINES {
@@ -621,22 +790,66 @@ mod tests {
 
     #[test]
     fn note_text_is_trimmed_and_limited_by_unicode_characters_and_lines() {
-        assert_eq!(validate_note_text("  hello  "), Ok("hello".to_owned()));
-        assert_eq!(validate_note_text(" \n\t "), Err("empty_text"));
         assert_eq!(
-            validate_note_text(&"가".repeat(MAX_NOTE_CHARS)),
+            validate_note_text("  hello  ", false),
+            Ok("hello".to_owned())
+        );
+        assert_eq!(validate_note_text(" \n\t ", false), Err("empty_text"));
+        assert_eq!(
+            validate_note_text(&"가".repeat(MAX_NOTE_CHARS), false),
             Ok("가".repeat(MAX_NOTE_CHARS))
         );
         assert_eq!(
-            validate_note_text(&"가".repeat(MAX_NOTE_CHARS + 1)),
+            validate_note_text(&"가".repeat(MAX_NOTE_CHARS + 1), false),
             Err("text_too_long")
         );
 
         let ten_lines = vec!["note"; MAX_NOTE_LINES].join("\n");
         let eleven_lines = vec!["note"; MAX_NOTE_LINES + 1].join("\n");
-        assert_eq!(validate_note_text(&ten_lines), Ok(ten_lines));
-        assert_eq!(validate_note_text(&eleven_lines), Err("too_many_lines"));
+        assert_eq!(validate_note_text(&ten_lines, false), Ok(ten_lines));
+        assert_eq!(
+            validate_note_text(&eleven_lines, false),
+            Err("too_many_lines")
+        );
         assert_eq!(note_line_count("first\r\nsecond"), 2);
+    }
+
+    #[test]
+    fn note_text_may_be_empty_only_with_an_image() {
+        assert_eq!(validate_note_text("  ", true), Ok(String::new()));
+        assert_eq!(
+            validate_note_text("caption", true),
+            Ok("caption".to_owned())
+        );
+        assert_eq!(
+            validate_note_text(&"a".repeat(MAX_NOTE_CHARS + 1), true),
+            Err("text_too_long")
+        );
+    }
+
+    #[test]
+    fn image_type_is_detected_from_file_signature() {
+        assert_eq!(
+            detect_image_type(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"),
+            Some("image/png")
+        );
+        assert_eq!(
+            detect_image_type(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10]),
+            Some("image/jpeg")
+        );
+        assert_eq!(detect_image_type(b"GIF89a\x01\0\x01\0"), Some("image/gif"));
+        assert_eq!(detect_image_type(b"GIF87a\x01\0\x01\0"), Some("image/gif"));
+        assert_eq!(
+            detect_image_type(b"RIFF\x24\0\0\0WEBPVP8 "),
+            Some("image/webp")
+        );
+        assert_eq!(
+            detect_image_type(b"<svg xmlns=\"http://www.w3.org/2000/svg\">"),
+            None
+        );
+        assert_eq!(detect_image_type(b"<html><script>"), None);
+        assert_eq!(detect_image_type(b"RIFF\x24\0\0\0WAVE"), None);
+        assert_eq!(detect_image_type(b""), None);
     }
 
     #[test]

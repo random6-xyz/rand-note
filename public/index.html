@@ -40,9 +40,17 @@
 
       <form id="note-form" class="composer" aria-label="Post a note">
         <label class="visually-hidden" for="note-text">Write a note</label>
-        <textarea id="note-text" name="text" rows="2" maxlength="500" placeholder="Write a note…" required></textarea>
+        <textarea id="note-text" name="text" rows="2" maxlength="500" placeholder="Write a note…"></textarea>
+        <div id="image-preview" class="image-preview" hidden>
+          <img id="image-preview-img" alt="Selected image preview">
+          <button id="remove-image" class="remove-image" type="button" aria-label="Remove image">×</button>
+        </div>
         <div class="composer-footer">
-          <span id="character-count" class="character-count">0/10 lines · 0/250 chars</span>
+          <div class="composer-tools">
+            <input id="note-image" class="visually-hidden" type="file" accept="image/png,image/jpeg,image/gif,image/webp">
+            <label class="button button-light button-attach" for="note-image">Photo</label>
+            <span id="character-count" class="character-count">0/10 lines · 0/250 chars</span>
+          </div>
           <div class="composer-actions">
             <span class="shortcut-hint"><kbd>Ctrl</kbd><span>+</span><kbd>Enter</kbd></span>
             <button id="submit-note" class="button button-post" type="submit">Post</button>

@@ -230,6 +230,20 @@ textarea:focus-visible {
   outline-offset: -2px;
 }
 
+.note-image-link {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.note-image {
+  display: block;
+  width: 100%;
+  max-height: 170px;
+  object-fit: contain;
+  border-radius: 2px;
+  background: rgb(0 0 0 / 4%);
+}
+
 .note-card p {
   margin: 0;
   white-space: pre-wrap;
@@ -329,6 +343,56 @@ textarea:focus-visible {
 
 .composer-actions {
   gap: 12px;
+}
+
+.composer-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.button-attach {
+  min-height: 28px;
+  padding: 0 9px;
+  font-size: 0.74rem;
+}
+
+.visually-hidden:focus-visible + .button-attach {
+  outline: 2px solid #555;
+  outline-offset: 2px;
+}
+
+.image-preview {
+  position: relative;
+  width: fit-content;
+  margin: 2px 3px 8px;
+}
+
+.image-preview img {
+  display: block;
+  min-width: 48px;
+  min-height: 48px;
+  max-width: 100%;
+  max-height: 120px;
+  object-fit: contain;
+  background: #f6f6f6;
+  border: 1px solid #eee;
+  border-radius: 6px;
+}
+
+.remove-image {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgb(0 0 0 / 60%);
+  color: #fff;
+  cursor: pointer;
+  line-height: 1;
 }
 
 .character-count {

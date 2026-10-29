@@ -4,7 +4,9 @@
   const MAX_NOTE_LINES = 10;
   const MAX_NOTE_CHARS = 250;
   const MAX_RANGE_DAYS = 31;
-  const state = { today: null, selectedRange: null, notes: [], isAdmin: false };
+  const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+  const ALLOWED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+  const state = { today: null, selectedRange: null, notes: [], isAdmin: false, image: null, previewUrl: null };
 
   const fromInput = document.querySelector("#history-from");
   const toInput = document.querySelector("#history-to");
@@ -18,6 +20,10 @@
   const noteText = document.querySelector("#note-text");
   const submitButton = document.querySelector("#submit-note");
   const characterCount = document.querySelector("#character-count");
+  const imageInput = document.querySelector("#note-image");
+  const imagePreview = document.querySelector("#image-preview");
+  const imagePreviewImg = document.querySelector("#image-preview-img");
+  const removeImageButton = document.querySelector("#remove-image");
   const formStatus = document.querySelector("#form-status");
   const notesContainer = document.querySelector("#notes");
 
@@ -35,6 +41,9 @@
       admin_required: "Admin cookie required.",
       origin_required: "Admin actions must come from this site.",
       rate_limited: "Too many posts. Try again in a moment.",
+      image_too_large: "Images can be up to 5 MB.",
+      unsupported_image: "Use a PNG, JPEG, GIF, or WebP image.",
+      invalid_form: "Could not read this note.",
       internal_error: "Something went wrong. Try again."
     };
     return messages[code] || "Could not complete that request. Try again.";
@@ -42,7 +51,7 @@
 
   async function api(path, options = {}) {
     const headers = { ...(options.headers || {}) };
-    if (options.body) headers["content-type"] = "application/json";
+    if (typeof options.body === "string") headers["content-type"] = "application/json";
 
     const response = await fetch(`${API_BASE}${path}`, {
       ...options,
@@ -100,9 +109,27 @@
       contentViewport.className = "note-card-content";
       contentViewport.tabIndex = 0;
 
-      const content = document.createElement("p");
-      content.textContent = note.text;
-      contentViewport.append(content);
+      if (note.image_type) {
+        const imageUrl = `${API_BASE}/api/images/${encodeURIComponent(note.id)}`;
+        const imageLink = document.createElement("a");
+        imageLink.className = "note-image-link";
+        imageLink.href = imageUrl;
+        imageLink.target = "_blank";
+        imageLink.rel = "noopener noreferrer";
+        const image = document.createElement("img");
+        image.className = "note-image";
+        image.src = imageUrl;
+        image.alt = note.text ? "Attached image" : "Image note";
+        image.loading = "lazy";
+        image.decoding = "async";
+        imageLink.append(image);
+        contentViewport.append(imageLink);
+      }
+      if (note.text) {
+        const content = document.createElement("p");
+        content.textContent = note.text;
+        contentViewport.append(content);
+      }
 
       const time = document.createElement("time");
       time.dateTime = note.created_at;
@@ -285,6 +312,34 @@
     updateCharacterCount();
   }
 
+  function clearImage() {
+    if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
+    state.image = null;
+    state.previewUrl = null;
+    imageInput.value = "";
+    imagePreviewImg.removeAttribute("src");
+    imagePreview.hidden = true;
+  }
+
+  function selectImage(file) {
+    if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
+      clearImage();
+      formStatus.textContent = errorMessage("unsupported_image");
+      return;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      clearImage();
+      formStatus.textContent = errorMessage("image_too_large");
+      return;
+    }
+    if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
+    state.image = file;
+    state.previewUrl = URL.createObjectURL(file);
+    imagePreviewImg.src = state.previewUrl;
+    imagePreview.hidden = false;
+    formStatus.textContent = "";
+  }
+
   viewDateButton.addEventListener("click", () => loadRange(fromInput.value, toInput.value));
   viewTodayButton.addEventListener("click", loadToday);
   resetTodayButton.addEventListener("click", resetToday);
@@ -304,6 +359,14 @@
   }
 
   noteText.addEventListener("input", enforceLineLimit);
+  imageInput.addEventListener("change", () => {
+    const [file] = imageInput.files;
+    if (file) selectImage(file);
+  });
+  removeImageButton.addEventListener("click", () => {
+    clearImage();
+    noteText.focus();
+  });
   noteText.addEventListener("keydown", (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && !event.isComposing) {
       event.preventDefault();
@@ -314,7 +377,7 @@
   noteForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const text = noteText.value.trim();
-    if (!text) {
+    if (!text && !state.image) {
       formStatus.textContent = errorMessage("empty_text");
       noteText.focus();
       return;
@@ -333,11 +396,17 @@
     submitButton.disabled = true;
     formStatus.textContent = "Posting…";
     try {
-      await api("/api/notes", {
-        method: "POST",
-        body: JSON.stringify({ text })
-      });
+      let body;
+      if (state.image) {
+        body = new FormData();
+        body.append("text", text);
+        body.append("image", state.image);
+      } else {
+        body = JSON.stringify({ text });
+      }
+      await api("/api/notes", { method: "POST", body });
       noteText.value = "";
+      clearImage();
       updateCharacterCount();
       await loadToday();
       formStatus.textContent = "Posted.";
