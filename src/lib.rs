@@ -598,7 +598,10 @@ mod tests {
             Ok(("2026-10-20".to_owned(), "2026-10-20".to_owned()))
         );
         assert_eq!(range("2026-10-20", "2026-10-14"), Err("invalid_range"));
-        assert_eq!(range("2026-10-13", "2026-10-20"), Err("history_not_available"));
+        assert_eq!(
+            range("2026-10-13", "2026-10-20"),
+            Err("history_not_available")
+        );
         assert_eq!(range("2026-11-01", "2026-11-21"), Err("future_date"));
         assert_eq!(range("2026-10-15", "2026-02-30"), Err("invalid_date"));
         assert_eq!(
