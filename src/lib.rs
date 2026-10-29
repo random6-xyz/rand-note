@@ -449,8 +449,17 @@ fn note_line_count(text: &str) -> usize {
         .count()
 }
 
+fn trim_note_text(input: &str) -> &str {
+    let text = input.trim_end();
+    let first_visible = text.find(|c: char| !c.is_whitespace()).unwrap_or(0);
+    let line_start = text[..first_visible]
+        .rfind(['\n', '\r'])
+        .map_or(0, |index| index + 1);
+    &text[line_start..]
+}
+
 fn validate_note_text(input: &str) -> std::result::Result<String, &'static str> {
-    let text = input.trim();
+    let text = trim_note_text(input);
     if text.is_empty() {
         return Err("empty_text");
     }
@@ -520,7 +529,7 @@ mod tests {
 
     #[test]
     fn note_text_is_trimmed_and_limited_by_unicode_characters_and_lines() {
-        assert_eq!(validate_note_text("  hello  "), Ok("hello".to_owned()));
+        assert_eq!(validate_note_text("  hello  "), Ok("  hello".to_owned()));
         assert_eq!(validate_note_text(" \n\t "), Err("empty_text"));
         assert_eq!(
             validate_note_text(&"가".repeat(MAX_NOTE_CHARS)),
@@ -536,6 +545,17 @@ mod tests {
         assert_eq!(validate_note_text(&ten_lines), Ok(ten_lines));
         assert_eq!(validate_note_text(&eleven_lines), Err("too_many_lines"));
         assert_eq!(note_line_count("first\r\nsecond"), 2);
+    }
+
+    #[test]
+    fn note_text_keeps_indentation_but_drops_blank_edges() {
+        assert_eq!(
+            trim_note_text("\n \n    indented\n  next  \n\n"),
+            "    indented\n  next"
+        );
+        assert_eq!(trim_note_text("\r\n\tfirst"), "\tfirst");
+        assert_eq!(trim_note_text("first\n\n  third"), "first\n\n  third");
+        assert_eq!(trim_note_text(" \n\t "), "");
     }
 
     #[test]

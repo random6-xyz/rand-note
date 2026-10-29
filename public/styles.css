@@ -176,7 +176,6 @@ textarea:focus-visible {
   position: relative;
   display: flex;
   min-height: 150px;
-  max-height: 280px;
   flex-direction: column;
   padding: 17px 17px 14px;
   overflow: hidden;
@@ -227,7 +226,10 @@ textarea:focus-visible {
 .note-card p {
   margin: 0;
   white-space: pre-wrap;
-  line-height: 1.55;
+  word-break: keep-all;
+  tab-size: 4;
+  font-size: 0.98rem;
+  line-height: 1.5;
 }
 
 .note-card time {
@@ -298,6 +300,7 @@ textarea:focus-visible {
   color: #191919;
   font-size: 0.98rem;
   line-height: 1.5;
+  tab-size: 4;
 }
 
 .composer textarea::placeholder {
@@ -423,7 +426,6 @@ textarea:focus-visible {
 
   .note-card {
     min-height: 130px;
-    max-height: 240px;
     padding: 14px;
   }
 

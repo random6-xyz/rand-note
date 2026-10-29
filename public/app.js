@@ -217,6 +217,11 @@
     notesContainer.append(message);
   }
 
+  // Mirrors the Worker: drop leading blank lines and trailing whitespace, keep indentation.
+  function trimNoteText(value) {
+    return value.trimEnd().replace(/^(?:[^\S\r\n]*(?:\r\n|\r|\n))+/, "");
+  }
+
   function countLines(text) {
     return text.length === 0 ? 0 : text.replace(/\r\n?/g, "\n").split("\n").length;
   }
@@ -269,7 +274,7 @@
 
   noteForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const text = noteText.value.trim();
+    const text = trimNoteText(noteText.value);
     if (!text) {
       formStatus.textContent = errorMessage("empty_text");
       noteText.focus();
